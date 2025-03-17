@@ -107,6 +107,14 @@ class ImageCleanModel(BaseModel):
                 self.device)
         else:
             raise ValueError('pixel loss are None.')
+        
+        # add Fourier Loss
+        if train_opt.get('fourier_opt'):
+            fourier_type = train_opt['fourier_opt'].pop('type')
+            cri_fourier_cls = getattr(loss_module, fourier_type)
+            self.cri_fourier = cri_fourier_cls(**train_opt['fourier_opt']).to(self.device)
+        else:
+            self.cri_fourier = None  # Optional loss
 
         # set up optimizers and schedulers
         self.setup_optimizers()
@@ -155,14 +163,32 @@ class ImageCleanModel(BaseModel):
         self.output = preds[-1]
 
         loss_dict = OrderedDict()
-        # pixel loss
-        l_pix = 0.
-        for pred in preds:
-            l_pix += self.cri_pix(pred, self.gt)
+        total_loss = 0.
 
-        loss_dict['l_pix'] = l_pix
+        # # pixel loss
+        # l_pix = 0.
+        # for pred in preds:
+        #     l_pix += self.cri_pix(pred, self.gt)
 
-        l_pix.backward()
+        # loss_dict['l_pix'] = l_pix
+
+        # pixel Loss
+        if self.cri_pix:
+            l_pix = 0.
+            for pred in preds:
+                l_pix += self.cri_pix(pred, self.gt)
+            total_loss += l_pix
+            loss_dict['l_pix'] = l_pix
+
+        # add Fourier loss
+        if self.cri_fourier:
+            l_fourier = self.cri_fourier(self.output, self.gt)
+            total_loss += l_fourier
+            loss_dict['l_fourier'] = l_fourier
+
+        # l_pix.backward()
+        total_loss.backward()
+
         if self.opt['train']['use_grad_clip']:
             torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), 0.01)
         self.optimizer_g.step()

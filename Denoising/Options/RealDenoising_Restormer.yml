@@ -20,27 +20,25 @@ datasets:
 
     # data loader
     use_shuffle: true
-    num_worker_per_gpu: 8
-    # batch_size_per_gpu: 8
+    num_worker_per_gpu: 4
     batch_size_per_gpu: 1
+    # batch_size_per_gpu: 1
 
-    ### -------------Progressive training--------------------------
-    # mini_batch_sizes: [8,5,4,2,1,1]             # Batch size per gpu   
-    mini_batch_sizes: [1,1,1,1,1,1] 
-    iters: [92000,64000,48000,36000,36000,24000]
-    gt_size: 384   # Max patch size for progressive training
-    gt_sizes: [128,160,192,256,320,384]  # Patch sizes for progressive training.
-    ### ------------------------------------------------------------
+    ### -------------Progressive Training--------------------------
+    mini_batch_sizes: [4, 2, 1, 1, 1, 1]  # Adjust batch sizes for Colab A100
+    iters: [20000, 15000, 10000, 5000, 5000, 5000]  # Adjust total iterations
+    gt_size: 384   # Maximum patch size for training
+    gt_sizes: [128,160,192,256,320,384]  # Start small, progressively increase
 
-    ### ------- Training on single fixed-patch size 128x128---------
-    # mini_batch_sizes: [8]   
-    # iters: [300000]
-    # gt_size: 128   
-    # gt_sizes: [128]
+    ### ------- Training on single fixed-patch size 512x512---------
+    # mini_batch_sizes: [1]   
+    # iters: [50000]
+    # gt_size: 512   
+    # gt_sizes: [512]
     ### ------------------------------------------------------------
 
     dataset_enlarge_ratio: 1
-    prefetch_mode: ~
+    prefetch_mode: "cpu"
 
   val:
     name: ValSet
@@ -73,7 +71,7 @@ path:
 
 # training settings
 train:
-  total_iter: 300000
+  total_iter: 60000
   warmup_iter: -1 # no warm up
   use_grad_clip: true
 
@@ -82,9 +80,11 @@ train:
   # 2nd cycle: cosine annealing (3e-4 to 1e-6) for 208k iters.
   scheduler:
     type: CosineAnnealingRestartCyclicLR
-    periods: [92000, 208000]       
+    # periods: [92000, 208000] 
+    periods: [40000, 20000]
     restart_weights: [1,1]
-    eta_mins: [0.0003,0.000001]   
+    # eta_mins: [0.0003,0.000001]
+    eta_mins: [0.0003, 0.00001]  
   
   mixing_augs:
     mixup: true
@@ -103,6 +103,11 @@ train:
     loss_weight: 1
     reduction: mean
 
+  fourier_opt:
+    type: FourierLoss
+    loss_weight: 0.5
+    reduction: mean
+
 # validation settings
 val:
   window_size: 8
@@ -110,7 +115,7 @@ val:
   save_img: false
   rgb2bgr: true
   use_image: false
-  max_minibatch: 8
+  max_minibatch: 4
 
   metrics:
     psnr: # metric name, can be arbitrary

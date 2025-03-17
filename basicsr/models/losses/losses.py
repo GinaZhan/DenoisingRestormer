@@ -120,3 +120,26 @@ class CharbonnierLoss(nn.Module):
         # loss = torch.sum(torch.sqrt(diff * diff + self.eps))
         loss = torch.mean(torch.sqrt((diff * diff) + (self.eps*self.eps)))
         return loss
+
+class FourierLoss(nn.Module):
+    """Fourier Loss: Compares frequency domain representations of the images."""
+    def __init__(self, loss_weight=1.0, reduction='mean'):
+        super(FourierLoss, self).__init__()
+        self.loss_weight = loss_weight
+        self.reduction = reduction
+
+    def forward(self, pred, target):
+        # Compute Fourier Transform Magnitudes
+        pred_fft = torch.fft.fft2(pred, norm="ortho")
+        target_fft = torch.fft.fft2(target, norm="ortho")
+        
+        # Compute L1 difference in frequency domain
+        loss = torch.abs(pred_fft - target_fft)
+        
+        # Reduce according to the reduction mode
+        if self.reduction == 'mean':
+            return self.loss_weight * loss.mean()
+        elif self.reduction == 'sum':
+            return self.loss_weight * loss.sum()
+        else:
+            return self.loss_weight * loss  # 'none' reduction mode
