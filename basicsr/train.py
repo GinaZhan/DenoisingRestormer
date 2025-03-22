@@ -270,7 +270,7 @@ def main():
             ###-------------------------------------------
 
             
-            model.feed_train_data({'lq': lq, 'gt':gt})
+            model.feed_train_data({'lq': lq, 'gt':gt,  'noise_level': train_data.get('noise_level', None)})
             model.optimize_parameters(current_iter)
 
             iter_time = time.time() - iter_time

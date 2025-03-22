@@ -200,11 +200,23 @@ class Restormer(nn.Module):
         heads = [1,2,4,8],
         ffn_expansion_factor = 2.66,
         bias = False,
-        LayerNorm_type = 'WithBias',   ## Other option 'BiasFree'
-        dual_pixel_task = False        ## True for dual-pixel defocus deblurring only. Also set inp_channels=6
+        LayerNorm_type = 'WithBias',    ## Other option 'BiasFree'
+        dual_pixel_task = False,        ## True for dual-pixel defocus deblurring only. Also set inp_channels=6
+        use_noise_embedding=True,       ## Task 2: Add option for noise embedding
+        noise_dim=16                    ## Task 2: Dimension of noise embedding
     ):
 
         super(Restormer, self).__init__()
+
+        if use_noise_embedding:
+            self.noise_mlp = nn.Sequential(
+                nn.Linear(1, noise_dim),
+                nn.ReLU(),
+                nn.Linear(noise_dim, dim)
+            )
+            self.use_noise_embedding = True
+        else:
+            self.use_noise_embedding = False
 
         self.patch_embed = OverlapPatchEmbed(inp_channels, dim)
 
@@ -242,9 +254,22 @@ class Restormer(nn.Module):
             
         self.output = nn.Conv2d(int(dim*2**1), out_channels, kernel_size=3, stride=1, padding=1, bias=bias)
 
-    def forward(self, inp_img):
+    def forward(self, inp_img, noise_level=None):
 
         inp_enc_level1 = self.patch_embed(inp_img)
+
+        if self.use_noise_embedding and noise_level is not None:
+            # noise_level shape: (B,) or (B, 1)
+            if len(noise_level.shape) == 1:
+                noise_level = noise_level.unsqueeze(1)  # (B, 1)
+            
+            B, C, H, W = inp_enc_level1.shape
+            noise_emb = self.noise_mlp(noise_level)  # (B, dim)
+            noise_emb = noise_emb.unsqueeze(2).unsqueeze(3)  # (B, dim, 1, 1)
+            noise_emb = noise_emb.expand(-1, -1, H, W)       # (B, dim, H, W)
+        
+            inp_enc_level1 = inp_enc_level1 + noise_emb
+
         out_enc_level1 = self.encoder_level1(inp_enc_level1)
         
         inp_enc_level2 = self.down1_2(out_enc_level1)

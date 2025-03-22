@@ -146,6 +146,12 @@ class ImageCleanModel(BaseModel):
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
 
+        # Store noise level if available
+        if 'noise_level' in data:
+            self.noise_level = data['noise_level'].to(self.device)
+        else:
+            self.noise_level = None
+
         if self.mixing_flag:
             self.gt, self.lq = self.mixing_augmentation(self.gt, self.lq)
 
@@ -154,9 +160,14 @@ class ImageCleanModel(BaseModel):
         if 'gt' in data:
             self.gt = data['gt'].to(self.device)
 
+        if 'noise_level' in data:
+            self.noise_level = data['noise_level'].to(self.device)
+        else:
+            self.noise_level = None
+
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
-        preds = self.net_g(self.lq)
+        preds = self.net_g(self.lq, noise_level=self.noise_level)
         if not isinstance(preds, list):
             preds = [preds]
 
@@ -182,6 +193,8 @@ class ImageCleanModel(BaseModel):
 
         # add Fourier loss
         if self.cri_fourier:
+            # Fourier loss is only applied to self.output (final result) to refine fine 
+            # details without over-constraining intermediate outputs
             l_fourier = self.cri_fourier(self.output, self.gt)
             total_loss += l_fourier
             loss_dict['l_fourier'] = l_fourier
@@ -217,14 +230,14 @@ class ImageCleanModel(BaseModel):
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
             with torch.no_grad():
-                pred = self.net_g_ema(img)
+                pred = self.net_g_ema(img, noise_level=self.noise_level)
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
         else:
             self.net_g.eval()
             with torch.no_grad():
-                pred = self.net_g(img)
+                pred = self.net_g(img, noise_level=self.noise_level)
             if isinstance(pred, list):
                 pred = pred[-1]
             self.output = pred
