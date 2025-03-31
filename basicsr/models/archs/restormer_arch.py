@@ -97,19 +97,29 @@ class FeedForward(nn.Module):
 ##########################################################################
 ## Multi-DConv Head Transposed Self-Attention (MDTA)
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads, bias):
+    def __init__(self, dim, num_heads, bias):   # dim is the channel dimension of the feature map (e.g., 48, 96...)
         super(Attention, self).__init__()
-        self.num_heads = num_heads
+        self.num_heads = num_heads # splits the embedding (dim) into multiple parallel attention heads
         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
 
         self.qkv = nn.Conv2d(dim, dim*3, kernel_size=1, bias=bias)
         self.qkv_dwconv = nn.Conv2d(dim*3, dim*3, kernel_size=3, stride=1, padding=1, groups=dim*3, bias=bias)
         self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
         
+        # Task 3
+        self.noise_map = nn.Sequential(
+            nn.Conv2d(dim, 1, kernel_size=3, padding=1),    # dim refers to feature channels, not spatial regions or patches
+            nn.Sigmoid()
+        )
 
+        self.alpha = nn.Parameter(torch.tensor(1.0))    # learnable — not fixed
 
     def forward(self, x):
-        b,c,h,w = x.shape
+        b,c,h,w = x.shape   # b is batch size, number of images in one mini-batch; c is dim
+
+        # Task 3
+        noise_weight = self.noise_map(x)  # (b, 1, h, w)
+        noise_weight = noise_weight.expand(b, self.num_heads, h * w, h * w)
 
         qkv = self.qkv_dwconv(self.qkv(x))
         q,k,v = qkv.chunk(3, dim=1)   
@@ -121,7 +131,11 @@ class Attention(nn.Module):
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
 
-        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        attn = (q @ k.transpose(-2, -1)) * self.temperature # (B, heads, HW, HW)
+
+        # Task 3
+        attn = attn * (1 + self.alpha * noise_weight)
+
         attn = attn.softmax(dim=-1)
 
         out = (attn @ v)
