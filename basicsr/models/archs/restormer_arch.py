@@ -115,31 +115,48 @@ class Attention(nn.Module):
         self.alpha = nn.Parameter(torch.tensor(1.0))    # learnable — not fixed
 
     def forward(self, x):
-        b,c,h,w = x.shape   # b is batch size, number of images in one mini-batch; c is dim
+        b, c, h, w = x.shape
 
-        # Task 3
-        noise_weight = self.noise_map(x)  # (b, 1, h, w)
-        noise_weight = noise_weight.expand(b, self.num_heads, h * w, h * w)
+        # Task 3: pixel-wise noise attention
+        x_small = F.avg_pool2d(x, kernel_size=2)
+        noise_weight = self.noise_map(x_small)  # (B, 1, H, W)
+        noise_weight = F.interpolate(noise_weight, size=(h, w), mode='bilinear', align_corners=False)
+        noise_weight = noise_weight.reshape(b, 1, h * w, 1)  # (B, 1, HW, 1)
+        noise_weight = noise_weight.expand(b, self.num_heads, h * w, h * w)  # (B, heads, HW, HW)
 
         qkv = self.qkv_dwconv(self.qkv(x))
-        q,k,v = qkv.chunk(3, dim=1)   
-        
-        q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        q, k, v = qkv.chunk(3, dim=1)
 
-        q = torch.nn.functional.normalize(q, dim=-1)
-        k = torch.nn.functional.normalize(k, dim=-1)
+        # Channel-wise attention
+        q_c = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        k_c = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        v_c = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
 
-        attn = (q @ k.transpose(-2, -1)) * self.temperature # (B, heads, HW, HW)
+        q_c = F.normalize(q_c, dim=-1)
+        k_c = F.normalize(k_c, dim=-1)
 
-        # Task 3
-        attn = attn * (1 + self.alpha * noise_weight)
+        attn_c = (q_c @ k_c.transpose(-2, -1)) * self.temperature  # (B, heads, C_head, C_head)
 
-        attn = attn.softmax(dim=-1)
+        # Pixel-wise attention
+        q_p = rearrange(q, 'b (head c) h w -> b head (h w) c', head=self.num_heads)
+        k_p = rearrange(k, 'b (head c) h w -> b head (h w) c', head=self.num_heads)
+        v_p = rearrange(v, 'b (head c) h w -> b head (h w) c', head=self.num_heads)
 
-        out = (attn @ v)
-        
+        q_p = F.normalize(q_p, dim=-1)
+        k_p = F.normalize(k_p, dim=-1)
+
+        attn_p = (q_p @ k_p.transpose(-2, -1))  # (B, heads, HW, HW)
+        attn_p = attn_p * (1 + self.alpha.view(1, 1, 1, 1) * noise_weight)
+        attn_p = attn_p.softmax(dim=-1)
+
+        out_p = attn_p @ v_p  # (B, heads, HW, C_head)
+        out_p = rearrange(out_p, 'b head hw c -> b head c hw')
+
+        # Fuse outputs: reshape channel attention first
+        out_c = attn_c @ v_c  # (B, heads, C_head, HW)
+
+        # Add the two attentions
+        out = (out_c + out_p) / 2
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
 
         out = self.project_out(out)
