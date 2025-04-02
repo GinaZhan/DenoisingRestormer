@@ -97,73 +97,65 @@ class FeedForward(nn.Module):
 ##########################################################################
 ## Multi-DConv Head Transposed Self-Attention (MDTA)
 class Attention(nn.Module):
-    def __init__(self, dim, num_heads, bias):   # dim is the channel dimension of the feature map (e.g., 48, 96...)
+    def __init__(self, dim, num_heads, bias):
         super(Attention, self).__init__()
-        self.num_heads = num_heads # splits the embedding (dim) into multiple parallel attention heads
+        self.num_heads = num_heads
         self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
 
         self.qkv = nn.Conv2d(dim, dim*3, kernel_size=1, bias=bias)
         self.qkv_dwconv = nn.Conv2d(dim*3, dim*3, kernel_size=3, stride=1, padding=1, groups=dim*3, bias=bias)
         self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
-        
-        # Task 3
-        self.noise_map = nn.Sequential(
-            nn.Conv2d(dim, 1, kernel_size=3, padding=1),    # dim refers to feature channels, not spatial regions or patches
-            nn.Sigmoid()
-        )
-
-        self.alpha = nn.Parameter(torch.tensor(1.0))    # learnable — not fixed
 
     def forward(self, x):
-        b, c, h, w = x.shape
-
-        # Task 3: pixel-wise noise attention
-        x_small = F.avg_pool2d(x, kernel_size=2)
-        noise_weight = self.noise_map(x_small)  # (B, 1, H, W)
-        noise_weight = F.interpolate(noise_weight, size=(h, w), mode='bilinear', align_corners=False)
-        noise_weight = noise_weight.reshape(b, 1, h * w, 1)  # (B, 1, HW, 1)
-        noise_weight = noise_weight.expand(b, self.num_heads, h * w, h * w)  # (B, heads, HW, HW)
+        b,c,h,w = x.shape
 
         qkv = self.qkv_dwconv(self.qkv(x))
-        q, k, v = qkv.chunk(3, dim=1)
+        q,k,v = qkv.chunk(3, dim=1)   
 
-        # Channel-wise attention
-        q_c = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        k_c = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        v_c = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
 
-        q_c = F.normalize(q_c, dim=-1)
-        k_c = F.normalize(k_c, dim=-1)
+        q = torch.nn.functional.normalize(q, dim=-1)
+        k = torch.nn.functional.normalize(k, dim=-1)
 
-        attn_c = (q_c @ k_c.transpose(-2, -1)) * self.temperature  # (B, heads, C_head, C_head)
+        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        attn = attn.softmax(dim=-1)
 
-        # Pixel-wise attention
-        q_p = rearrange(q, 'b (head c) h w -> b head (h w) c', head=self.num_heads)
-        k_p = rearrange(k, 'b (head c) h w -> b head (h w) c', head=self.num_heads)
-        v_p = rearrange(v, 'b (head c) h w -> b head (h w) c', head=self.num_heads)
+        out = (attn @ v)
 
-        q_p = F.normalize(q_p, dim=-1)
-        k_p = F.normalize(k_p, dim=-1)
-
-        attn_p = (q_p @ k_p.transpose(-2, -1))  # (B, heads, HW, HW)
-        attn_p = attn_p * (1 + self.alpha.view(1, 1, 1, 1) * noise_weight)
-        attn_p = attn_p.softmax(dim=-1)
-
-        out_p = attn_p @ v_p  # (B, heads, HW, C_head)
-        out_p = rearrange(out_p, 'b head hw c -> b head c hw')
-
-        # Fuse outputs: reshape channel attention first
-        out_c = attn_c @ v_c  # (B, heads, C_head, HW)
-
-        # Add the two attentions
-        out = (out_c + out_p) / 2
         out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
 
         out = self.project_out(out)
         return out
 
+###############################################################################
+## Task 3
+class NoiseAwareChannelAtt(nn.Module):
+    def __init__(self, dim, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
 
+        self.avg_mlp = nn.Sequential(
+            nn.Conv2d(dim, dim // reduction, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim // reduction, dim, 1),
+            nn.Sigmoid()
+        )
 
+        self.std_mlp = nn.Sequential(
+            nn.Conv2d(dim, dim // reduction, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim // reduction, dim, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        std_map = ((x - x.mean(dim=(2, 3), keepdim=True)) ** 2).mean(dim=(2, 3), keepdim=True).sqrt()
+        avg_map = self.avg_pool(x)
+        att = (self.avg_mlp(avg_map) + self.std_mlp(std_map)) / 2
+        return att * x
+    
 ##########################################################################
 class TransformerBlock(nn.Module):
     def __init__(self, dim, num_heads, ffn_expansion_factor, bias, LayerNorm_type):
@@ -173,9 +165,12 @@ class TransformerBlock(nn.Module):
         self.attn = Attention(dim, num_heads, bias)
         self.norm2 = LayerNorm(dim, LayerNorm_type)
         self.ffn = FeedForward(dim, ffn_expansion_factor, bias)
+        self.noise_aware_channel_att = NoiseAwareChannelAtt(dim)
 
     def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+        x_attn = self.attn(self.norm1(x))
+        x = self.noise_aware_channel_att(x)
+        x = x + x_attn
         x = x + self.ffn(self.norm2(x))
 
         return x
