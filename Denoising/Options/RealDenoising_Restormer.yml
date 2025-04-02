@@ -61,8 +61,6 @@ network_g:
   bias: False
   LayerNorm_type: BiasFree
   dual_pixel_task: False
-  use_noise_embedding: true        # Task 2
-  noise_dim: 16                    # Task 2
 
 
 # path

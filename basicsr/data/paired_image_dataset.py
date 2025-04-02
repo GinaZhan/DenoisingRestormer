@@ -121,18 +121,11 @@ class Dataset_PairedImage(data.Dataset):
             normalize(img_lq, self.mean, self.std, inplace=True)
             normalize(img_gt, self.mean, self.std, inplace=True)
         
-        # Task 2: Add pseudo noise level
-        # Even though the real noise doesn’t vary much, this encourages the model to learn to 
-        # respond to a conditioning input, and keeps the architecture compatible with models 
-        # that do use true noise-level inputs.
-        noise_level = torch.FloatTensor(1).uniform_(0.05, 0.2)
-
         return {
             'lq': img_lq,
             'gt': img_gt,
             'lq_path': lq_path,
-            'gt_path': gt_path,
-            'noise_level': noise_level
+            'gt_path': gt_path
         }
 
     def __len__(self):
